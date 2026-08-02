@@ -6,14 +6,12 @@ generator client {
   provider = "prisma-client-js"
 }
 
-
-
 // 1. User (ข้อมูลผู้ใช้งาน)
 model User {
   user_id    String   @id @default(uuid()) @db.Uuid
   email      String   @unique
   name       String
-  role       String   // student, admin
+  role       String // student, admin
   google_id  String   @unique
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
@@ -31,11 +29,14 @@ model Student {
   created_at     DateTime @default(now())
   updated_at     DateTime @updatedAt
 
-  user              User               @relation(fields: [user_id], references: [user_id])
-  studentPrograms   StudentProgram[]
-  studentGrades     StudentGrade[]
-  transcriptUploads TranscriptUpload[]
-  analysisResults   AnalysisResult[]
+  user               User                        @relation(fields: [user_id], references: [user_id])
+  studentPrograms    StudentProgram[]
+  studentGrades      StudentGrade[]
+  transcriptUploads  TranscriptUpload[]
+  analysisResults    AnalysisResult[]
+  simulationSessions SimulationSession[]
+  semesterSummaries  TranscriptSemesterSummary[]
+  recommendations    Recommendation[]
 }
 
 // 3. Admin (ข้อมูลผู้ดูแลระบบ)
@@ -52,12 +53,14 @@ model StudentProgram {
   student_program_id String   @id @default(uuid()) @db.Uuid
   student_id         String   @db.Uuid
   program_id         String   @db.Uuid
-  study_track        String   // research, cooperative
+  study_track        String // research, cooperative
   enrolled_at        DateTime
   created_at         DateTime @default(now())
 
   student Student @relation(fields: [student_id], references: [student_id])
   program Program @relation(fields: [program_id], references: [program_id])
+
+  @@unique([student_id, program_id, study_track])
 }
 
 // 5. Program (ข้อมูลหลักสูตร)
@@ -68,7 +71,7 @@ model Program {
   program_name_en String
   curriculum_year Int
   total_credits   Int
-  status          String   // active, inactive
+  status          String // active, inactive
   created_at      DateTime @default(now())
   updated_at      DateTime @updatedAt
 
@@ -78,6 +81,7 @@ model Program {
   courseOfferings CourseOffering[]
   studentPrograms StudentProgram[]
   analysisResults AnalysisResult[]
+  rules           Rule[]
 }
 
 // 6. ProgramStructure (โครงสร้างหลักสูตร)
@@ -86,7 +90,7 @@ model ProgramStructure {
   program_id       String   @db.Uuid
   category_name    String
   required_credits Int
-  category_type    String   // general, specific, free
+  category_type    String // general, specific, free
   description      String?
   created_at       DateTime @default(now())
 
@@ -113,6 +117,7 @@ model Course {
   courseOfferings   CourseOffering[]
   studentGrades     StudentGrade[]
   simulationCourses SimulationCourse[]
+  gradeMappings     GradeMapping[]
 }
 
 // 8. ProgramCourse (ความสัมพันธ์หลักสูตร-รายวิชา)
@@ -121,13 +126,16 @@ model ProgramCourse {
   program_id        String   @db.Uuid
   course_id         String   @db.Uuid
   structure_id      String   @db.Uuid
-  course_type       String   // required, elective
-  study_track       String   // research, cooperative
+  course_type       String // required, elective
+  study_track       String // research, cooperative
   created_at        DateTime @default(now())
 
   program   Program          @relation(fields: [program_id], references: [program_id])
   course    Course           @relation(fields: [course_id], references: [course_id])
   structure ProgramStructure @relation(fields: [structure_id], references: [structure_id])
+
+  @@unique([program_id, course_id, study_track])
+  @@index([structure_id])
 }
 
 // 9. Prerequisite (รายวิชาบังคับก่อน)
@@ -135,28 +143,32 @@ model Prerequisite {
   prerequisite_id    String   @id @default(uuid()) @db.Uuid
   course_id          String   @db.Uuid
   required_course_id String   @db.Uuid
-  condition_type     String   // required, alternative
-  minimum_grade      String   // D, C
+  condition_type     String // required, alternative
+  minimum_grade      String // D, C
   description        String?
   created_at         DateTime @default(now())
   updated_at         DateTime @updatedAt
 
   course         Course @relation("TargetCourse", fields: [course_id], references: [course_id])
   requiredCourse Course @relation("RequiredCourse", fields: [required_course_id], references: [course_id])
+
+  @@unique([course_id, required_course_id, condition_type])
 }
 
 // 10. StudyPlan (แผนการเรียน)
 model StudyPlan {
   study_plan_id String   @id @default(uuid()) @db.Uuid
   program_id    String   @db.Uuid
-  study_track   String   // research, cooperative
+  study_track   String // research, cooperative
   year_level    Int
-  semester      String   // 1, 2, summer
+  semester      String // 1, 2, summer
   created_at    DateTime @default(now())
   updated_at    DateTime @updatedAt
 
   program          Program           @relation(fields: [program_id], references: [program_id])
   studyPlanCourses StudyPlanCourse[]
+
+  @@unique([program_id, study_track, year_level, semester])
 }
 
 // 11. StudyPlanCourse (รายวิชาในแผนการเรียน)
@@ -169,6 +181,8 @@ model StudyPlanCourse {
 
   studyPlan StudyPlan @relation(fields: [study_plan_id], references: [study_plan_id])
   course    Course    @relation(fields: [course_id], references: [course_id])
+
+  @@unique([study_plan_id, course_id])
 }
 
 // 12. CourseOffering (รายวิชาที่เปิดสอน)
@@ -177,13 +191,16 @@ model CourseOffering {
   program_id    String   @db.Uuid
   course_id     String   @db.Uuid
   academic_year Int
-  semester      String   // 1, 2, summer
-  status        String   // planned, confirmed
+  semester      String // 1, 2, summer
+  status        String // planned, confirmed
   created_at    DateTime @default(now())
   updated_at    DateTime @updatedAt
 
   program Program @relation(fields: [program_id], references: [program_id])
   course  Course  @relation(fields: [course_id], references: [course_id])
+
+  @@unique([program_id, course_id, academic_year, semester])
+  @@index([academic_year, semester])
 }
 
 // 13. TranscriptUpload (ประวัติการอัปโหลดใบรายงานผลการเรียน)
@@ -191,7 +208,7 @@ model TranscriptUpload {
   transcript_id    String   @id @default(uuid()) @db.Uuid
   student_id       String   @db.Uuid
   file_name        String
-  extracted_status String   // success, needs_review
+  extracted_status String // success, needs_review
   uploaded_at      DateTime @default(now())
   created_at       DateTime @default(now())
 
@@ -207,7 +224,7 @@ model StudentGrade {
   course_id         String   @db.Uuid
   academic_year     Int
   semester          String
-  grade             String   // A, B+, F, W
+  grade             String // A, B+, F, W
   credits_attempted Int
   credits_earned    Int
   is_confirmed      Boolean  @default(false)
@@ -217,54 +234,138 @@ model StudentGrade {
   transcript TranscriptUpload @relation(fields: [transcript_id], references: [transcript_id])
   student    Student          @relation(fields: [student_id], references: [student_id])
   course     Course           @relation(fields: [course_id], references: [course_id])
+
+  @@unique([student_id, course_id, academic_year, semester])
+  @@index([transcript_id])
 }
 
-// 15. AnalysisResult (ผลการวิเคราะห์สถานะการเรียน)
+// 15. GradeMapping (grade conversion rules)
+model GradeMapping {
+  grade_mapping_id String   @id @default(uuid()) @db.Uuid
+  course_id        String?  @db.Uuid
+  grade            String
+  grade_point      Decimal  @db.Decimal(3, 2)
+  is_passing       Boolean
+  is_credit_earned Boolean
+  created_at       DateTime @default(now())
+  updated_at       DateTime @updatedAt
+
+  course Course? @relation(fields: [course_id], references: [course_id])
+
+  @@unique([course_id, grade])
+  @@index([grade])
+}
+
+// 16. TranscriptSemesterSummary (semester GPA summary)
+model TranscriptSemesterSummary {
+  summary_id              String   @id @default(uuid()) @db.Uuid
+  student_id              String   @db.Uuid
+  academic_year           Int
+  semester                String
+  semester_credits        Int
+  cumulative_credits      Int
+  semester_grade_points   Decimal  @db.Decimal(5, 2)
+  cumulative_grade_points Decimal  @db.Decimal(6, 2)
+  gpa                     Decimal  @db.Decimal(3, 2)
+  gpax                    Decimal  @db.Decimal(3, 2)
+  created_at              DateTime @default(now())
+  updated_at              DateTime @updatedAt
+
+  student Student @relation(fields: [student_id], references: [student_id])
+
+  @@unique([student_id, academic_year, semester])
+  @@index([academic_year, semester])
+}
+
+// 17. AnalysisResult (academic analysis result)
 model AnalysisResult {
   result_id                String   @id @default(uuid()) @db.Uuid
   student_id               String   @db.Uuid
   program_id               String   @db.Uuid
   total_credits_earned     Int
   total_credits_required   Int
-  academic_status          String   // Normal, Probation
+  academic_status          String // Normal, Probation
   expected_graduation_term String
   result_summary           Json
   analyzed_at              DateTime @default(now())
   created_at               DateTime @default(now())
   updated_at               DateTime @updatedAt
 
-  student Student @relation(fields: [student_id], references: [student_id])
-  program Program @relation(fields: [program_id], references: [program_id])
+  student            Student             @relation(fields: [student_id], references: [student_id])
+  program            Program             @relation(fields: [program_id], references: [program_id])
+  simulationSessions SimulationSession[]
+  recommendations    Recommendation[]
+
+  @@index([student_id, analyzed_at])
+  @@index([program_id])
 }
 
-// 16. SimulationSession (รอบเซสชันจำลองแผนการเรียน)
+// 18. Recommendation (proactive academic recommendation)
+model Recommendation {
+  recommendation_id   String   @id @default(uuid()) @db.Uuid
+  result_id           String   @db.Uuid
+  student_id          String   @db.Uuid
+  recommendation_type String
+  message             String
+  priority            Int
+  is_dismissed        Boolean  @default(false)
+  created_at          DateTime @default(now())
+  updated_at          DateTime @updatedAt
+
+  result  AnalysisResult @relation(fields: [result_id], references: [result_id])
+  student Student        @relation(fields: [student_id], references: [student_id])
+
+  @@index([result_id])
+  @@index([student_id, priority])
+}
+
+// 19. SimulationSession (what-if simulation session)
 model SimulationSession {
-  simulation_id String   @id @default(uuid()) @db.Uuid
-  student_id    String   @db.Uuid
-  created_at    DateTime @default(now())
+  simulation_id   String   @id @default(uuid()) @db.Uuid
+  result_id       String   @db.Uuid
+  student_id      String   @db.Uuid
+  scenario_name   String
+  scenario_input  Json
+  scenario_result Json
+  created_at      DateTime @default(now())
 
+  result            AnalysisResult     @relation(fields: [result_id], references: [result_id])
+  student           Student            @relation(fields: [student_id], references: [student_id])
   simulationCourses SimulationCourse[]
+
+  @@index([result_id])
+  @@index([student_id, created_at])
 }
 
-// 17. SimulationCourse (รายวิชาในกลุ่มจำลอง)
+// 20. SimulationCourse (course item in a simulation)
 model SimulationCourse {
   simulation_course_id String   @id @default(uuid()) @db.Uuid
   simulation_id        String   @db.Uuid
   course_id            String   @db.Uuid
   simulated_grade      String
-  action_type          String   // drop, add, fail
+  action_type          String // drop, add, fail
   created_at           DateTime @default(now())
 
   simulationSession SimulationSession @relation(fields: [simulation_id], references: [simulation_id])
   course            Course            @relation(fields: [course_id], references: [course_id])
+
+  @@unique([simulation_id, course_id, action_type])
 }
 
-// 18. Rule (กติกาการวิเคราะห์เงื่อนไขทางวิชาการ)
+// 21. Rule (academic analysis rule)
 model Rule {
   rule_id     String   @id @default(uuid()) @db.Uuid
-  rule_code   String   @unique
+  program_id  String   @db.Uuid
+  rule_type   String
   rule_name   String
-  condition   Json
+  rule_value  Json
   description String?
   created_at  DateTime @default(now())
+  is_active   Boolean  @default(true)
+  updated_at  DateTime @updatedAt
+
+  program Program @relation(fields: [program_id], references: [program_id])
+
+  @@unique([program_id, rule_type, rule_name])
+  @@index([program_id, is_active])
 }

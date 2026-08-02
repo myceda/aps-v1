@@ -1,8 +1,11 @@
 import { NextResponse } from 'next/server';
+import { requireUser } from '../../../lib/auth/index.js';
 import { prisma } from '../../../lib/prisma.js';
 
-// API สำหรับดึงรายการหลักสูตร CS65, IT65 จาก PostgreSQL
-export async function GET() {
+export async function GET(request) {
+  const auth = await requireUser(request);
+  if (auth.error) return auth.error;
+
   try {
     const programs = await prisma.program.findMany({
       orderBy: { curriculum_year: 'desc' },
