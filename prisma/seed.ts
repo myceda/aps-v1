@@ -8,7 +8,6 @@ const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
 
 const TRACKS = ['research', 'cooperative'];
-const SEMESTERS = ['1', '2', 'summer'];
 
 const seededGoogleIds = [
   'demo-student-phase-2',
