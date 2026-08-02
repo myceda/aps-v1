@@ -1,0 +1,270 @@
+datasource db {
+  provider = "postgresql"
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+
+
+// 1. User (ข้อมูลผู้ใช้งาน)
+model User {
+  user_id    String   @id @default(uuid()) @db.Uuid
+  email      String   @unique
+  name       String
+  role       String   // student, admin
+  google_id  String   @unique
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  student Student?
+  admin   Admin?
+}
+
+// 2. Student (ข้อมูลนักศึกษา)
+model Student {
+  student_id     String   @id @default(uuid()) @db.Uuid
+  user_id        String   @unique @db.Uuid
+  student_code   String   @unique
+  admission_year Int
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
+
+  user              User               @relation(fields: [user_id], references: [user_id])
+  studentPrograms   StudentProgram[]
+  studentGrades     StudentGrade[]
+  transcriptUploads TranscriptUpload[]
+  analysisResults   AnalysisResult[]
+}
+
+// 3. Admin (ข้อมูลผู้ดูแลระบบ)
+model Admin {
+  admin_id   String   @id @default(uuid()) @db.Uuid
+  user_id    String   @unique @db.Uuid
+  created_at DateTime @default(now())
+
+  user User @relation(fields: [user_id], references: [user_id])
+}
+
+// 4. StudentProgram (การเลือกหลักสูตรของนักศึกษา)
+model StudentProgram {
+  student_program_id String   @id @default(uuid()) @db.Uuid
+  student_id         String   @db.Uuid
+  program_id         String   @db.Uuid
+  study_track        String   // research, cooperative
+  enrolled_at        DateTime
+  created_at         DateTime @default(now())
+
+  student Student @relation(fields: [student_id], references: [student_id])
+  program Program @relation(fields: [program_id], references: [program_id])
+}
+
+// 5. Program (ข้อมูลหลักสูตร)
+model Program {
+  program_id      String   @id @default(uuid()) @db.Uuid
+  program_code    String   @unique // CS65, IT65
+  program_name_th String
+  program_name_en String
+  curriculum_year Int
+  total_credits   Int
+  status          String   // active, inactive
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  structures      ProgramStructure[]
+  programCourses  ProgramCourse[]
+  studyPlans      StudyPlan[]
+  courseOfferings CourseOffering[]
+  studentPrograms StudentProgram[]
+  analysisResults AnalysisResult[]
+}
+
+// 6. ProgramStructure (โครงสร้างหลักสูตร)
+model ProgramStructure {
+  structure_id     String   @id @default(uuid()) @db.Uuid
+  program_id       String   @db.Uuid
+  category_name    String
+  required_credits Int
+  category_type    String   // general, specific, free
+  description      String?
+  created_at       DateTime @default(now())
+
+  program        Program         @relation(fields: [program_id], references: [program_id])
+  programCourses ProgramCourse[]
+}
+
+// 7. Course (ข้อมูลรายวิชา)
+model Course {
+  course_id         String   @id @default(uuid()) @db.Uuid
+  course_code       String   @unique
+  course_name_th    String
+  course_name_en    String
+  credits           Int
+  is_credit_counted Boolean  @default(true)
+  description       String?
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+
+  programCourses    ProgramCourse[]
+  prerequisites     Prerequisite[]     @relation("TargetCourse")
+  requiredFor       Prerequisite[]     @relation("RequiredCourse")
+  studyPlanCourses  StudyPlanCourse[]
+  courseOfferings   CourseOffering[]
+  studentGrades     StudentGrade[]
+  simulationCourses SimulationCourse[]
+}
+
+// 8. ProgramCourse (ความสัมพันธ์หลักสูตร-รายวิชา)
+model ProgramCourse {
+  program_course_id String   @id @default(uuid()) @db.Uuid
+  program_id        String   @db.Uuid
+  course_id         String   @db.Uuid
+  structure_id      String   @db.Uuid
+  course_type       String   // required, elective
+  study_track       String   // research, cooperative
+  created_at        DateTime @default(now())
+
+  program   Program          @relation(fields: [program_id], references: [program_id])
+  course    Course           @relation(fields: [course_id], references: [course_id])
+  structure ProgramStructure @relation(fields: [structure_id], references: [structure_id])
+}
+
+// 9. Prerequisite (รายวิชาบังคับก่อน)
+model Prerequisite {
+  prerequisite_id    String   @id @default(uuid()) @db.Uuid
+  course_id          String   @db.Uuid
+  required_course_id String   @db.Uuid
+  condition_type     String   // required, alternative
+  minimum_grade      String   // D, C
+  description        String?
+  created_at         DateTime @default(now())
+  updated_at         DateTime @updatedAt
+
+  course         Course @relation("TargetCourse", fields: [course_id], references: [course_id])
+  requiredCourse Course @relation("RequiredCourse", fields: [required_course_id], references: [course_id])
+}
+
+// 10. StudyPlan (แผนการเรียน)
+model StudyPlan {
+  study_plan_id String   @id @default(uuid()) @db.Uuid
+  program_id    String   @db.Uuid
+  study_track   String   // research, cooperative
+  year_level    Int
+  semester      String   // 1, 2, summer
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  program          Program           @relation(fields: [program_id], references: [program_id])
+  studyPlanCourses StudyPlanCourse[]
+}
+
+// 11. StudyPlanCourse (รายวิชาในแผนการเรียน)
+model StudyPlanCourse {
+  study_plan_course_id String   @id @default(uuid()) @db.Uuid
+  study_plan_id        String   @db.Uuid
+  course_id            String   @db.Uuid
+  recommended_order    Int
+  created_at           DateTime @default(now())
+
+  studyPlan StudyPlan @relation(fields: [study_plan_id], references: [study_plan_id])
+  course    Course    @relation(fields: [course_id], references: [course_id])
+}
+
+// 12. CourseOffering (รายวิชาที่เปิดสอน)
+model CourseOffering {
+  offering_id   String   @id @default(uuid()) @db.Uuid
+  program_id    String   @db.Uuid
+  course_id     String   @db.Uuid
+  academic_year Int
+  semester      String   // 1, 2, summer
+  status        String   // planned, confirmed
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  program Program @relation(fields: [program_id], references: [program_id])
+  course  Course  @relation(fields: [course_id], references: [course_id])
+}
+
+// 13. TranscriptUpload (ประวัติการอัปโหลดใบรายงานผลการเรียน)
+model TranscriptUpload {
+  transcript_id    String   @id @default(uuid()) @db.Uuid
+  student_id       String   @db.Uuid
+  file_name        String
+  extracted_status String   // success, needs_review
+  uploaded_at      DateTime @default(now())
+  created_at       DateTime @default(now())
+
+  student       Student        @relation(fields: [student_id], references: [student_id])
+  studentGrades StudentGrade[]
+}
+
+// 14. StudentGrade (ผลการเรียนของนักศึกษา)
+model StudentGrade {
+  grade_id          String   @id @default(uuid()) @db.Uuid
+  transcript_id     String   @db.Uuid
+  student_id        String   @db.Uuid
+  course_id         String   @db.Uuid
+  academic_year     Int
+  semester          String
+  grade             String   // A, B+, F, W
+  credits_attempted Int
+  credits_earned    Int
+  is_confirmed      Boolean  @default(false)
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+
+  transcript TranscriptUpload @relation(fields: [transcript_id], references: [transcript_id])
+  student    Student          @relation(fields: [student_id], references: [student_id])
+  course     Course           @relation(fields: [course_id], references: [course_id])
+}
+
+// 15. AnalysisResult (ผลการวิเคราะห์สถานะการเรียน)
+model AnalysisResult {
+  result_id                String   @id @default(uuid()) @db.Uuid
+  student_id               String   @db.Uuid
+  program_id               String   @db.Uuid
+  total_credits_earned     Int
+  total_credits_required   Int
+  academic_status          String   // Normal, Probation
+  expected_graduation_term String
+  result_summary           Json
+  analyzed_at              DateTime @default(now())
+  created_at               DateTime @default(now())
+  updated_at               DateTime @updatedAt
+
+  student Student @relation(fields: [student_id], references: [student_id])
+  program Program @relation(fields: [program_id], references: [program_id])
+}
+
+// 16. SimulationSession (รอบเซสชันจำลองแผนการเรียน)
+model SimulationSession {
+  simulation_id String   @id @default(uuid()) @db.Uuid
+  student_id    String   @db.Uuid
+  created_at    DateTime @default(now())
+
+  simulationCourses SimulationCourse[]
+}
+
+// 17. SimulationCourse (รายวิชาในกลุ่มจำลอง)
+model SimulationCourse {
+  simulation_course_id String   @id @default(uuid()) @db.Uuid
+  simulation_id        String   @db.Uuid
+  course_id            String   @db.Uuid
+  simulated_grade      String
+  action_type          String   // drop, add, fail
+  created_at           DateTime @default(now())
+
+  simulationSession SimulationSession @relation(fields: [simulation_id], references: [simulation_id])
+  course            Course            @relation(fields: [course_id], references: [course_id])
+}
+
+// 18. Rule (กติกาการวิเคราะห์เงื่อนไขทางวิชาการ)
+model Rule {
+  rule_id     String   @id @default(uuid()) @db.Uuid
+  rule_code   String   @unique
+  rule_name   String
+  condition   Json
+  description String?
+  created_at  DateTime @default(now())
+}
