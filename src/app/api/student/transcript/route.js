@@ -2,10 +2,17 @@ import { NextResponse } from 'next/server';
 import { requireStudent } from '../../../../lib/auth/index.js';
 import { prisma } from '../../../../lib/prisma.js';
 import {
+  buildRawExtractedRowPayload,
   buildTranscriptSavePayload,
   getCreditsEarned,
+  normalizeCourseCode,
+  parseTranscriptText,
+  applyTranscriptExtractionQualityGate,
   validateTranscriptRows,
 } from '../../../../lib/student-transcript.js';
+import { extractPdfTranscriptText } from '../../../../../services/pdf-extractor/index.js';
+
+export const runtime = 'nodejs';
 
 function jsonResponse(payload, status = 200) {
   return NextResponse.json(payload, { status });
@@ -17,6 +24,28 @@ async function readBody(request) {
   } catch {
     return {};
   }
+}
+
+async function readTranscriptFile(request) {
+  const formData = await request.formData();
+  const file = formData.get('file');
+
+  if (!file || typeof file.arrayBuffer !== 'function') {
+    return { error: 'กรุณาอัปโหลดไฟล์ transcript PDF' };
+  }
+
+  const fileName = String(file.name || 'transcript.pdf').slice(0, 180);
+  const isPdf = file.type === 'application/pdf' || fileName.toLowerCase().endsWith('.pdf');
+  if (!isPdf) {
+    return { error: 'รองรับเฉพาะไฟล์ PDF เท่านั้น' };
+  }
+
+  const buffer = Buffer.from(await file.arrayBuffer());
+  if (buffer.length > 10 * 1024 * 1024) {
+    return { error: 'ไฟล์ PDF ต้องมีขนาดไม่เกิน 10 MB' };
+  }
+
+  return { fileName, buffer };
 }
 
 function buildExistingDuplicateSet(grades) {
@@ -45,6 +74,7 @@ async function getCourseOptions(student) {
       course_name_th: true,
       course_name_en: true,
       credits: true,
+      is_credit_counted: true,
     },
   });
 }
@@ -61,13 +91,69 @@ export async function GET(request) {
   }
 }
 
+async function extractTranscriptRows(request, student) {
+  const upload = await readTranscriptFile(request);
+  if (upload.error) {
+    return jsonResponse({ success: false, error: upload.error }, 422);
+  }
+
+  const courses = await getCourseOptions(student);
+  const extraction = await extractPdfTranscriptText(upload.buffer, upload.fileName);
+  const parsedRows = parseTranscriptText(extraction.text);
+  const gatedResult = applyTranscriptExtractionQualityGate(extraction, parsedRows);
+  const validation = validateTranscriptRows(gatedResult.rows, courses);
+  const manualReviewRequired = gatedResult.extraction.status === 'needs_manual_entry';
+
+  return jsonResponse({
+    success: true,
+    data: {
+      file_name: upload.fileName,
+      extraction: {
+        method: gatedResult.extraction.method,
+        status: gatedResult.extraction.status,
+        warnings: gatedResult.extraction.warnings,
+        quality: gatedResult.extraction.quality,
+        textLength: gatedResult.extraction.text.length,
+      },
+      manual_review: {
+        required: manualReviewRequired,
+        reason: gatedResult.extraction.quality?.decision || gatedResult.extraction.method || 'manual_entry_required',
+        parsedRows: gatedResult.extraction.quality?.parsedRows ?? parsedRows.length,
+        completeRows: gatedResult.extraction.quality?.completeRows ?? 0,
+        suggestedBlankRows: manualReviewRequired ? 8 : 0,
+      },
+      rows: validation.rows,
+      raw_rows: validation.rawRows,
+      confirmed_rows: validation.confirmedRows,
+      validation,
+    },
+  });
+}
+
 export async function POST(request) {
   const auth = await requireStudent(request);
   if (auth.error) return auth.error;
 
+  const contentType = request.headers.get('content-type') || '';
+  if (contentType.includes('multipart/form-data')) {
+    try {
+      return await extractTranscriptRows(request, auth.student);
+    } catch (error) {
+      return jsonResponse({ success: false, error: error.message || 'สกัดข้อมูลจาก PDF ไม่สำเร็จ' }, 500);
+    }
+  }
+
   const payload = await readBody(request);
   const fileName = String(payload.file_name || 'transcript.pdf').slice(0, 180);
-  const rawRows = Array.isArray(payload.rows) ? payload.rows : [];
+  const rawRows = Array.isArray(payload.raw_rows)
+    ? payload.raw_rows
+    : Array.isArray(payload.rows)
+      ? payload.rows
+      : [];
+
+  if (payload.confirm !== true) {
+    return jsonResponse({ success: false, error: 'ต้องยืนยันข้อมูล transcript ก่อนบันทึก' }, 422);
+  }
 
   if (rawRows.length === 0) {
     return jsonResponse({ success: false, error: 'ต้องมีรายการวิชาอย่างน้อย 1 แถวก่อนบันทึก' }, 422);
@@ -90,8 +176,9 @@ export async function POST(request) {
       where: { student_id: student.student_id },
       include: { course: true },
     });
+    const saveRows = buildTranscriptSavePayload(validation.rows);
     const existingDuplicateSet = buildExistingDuplicateSet(existingGrades);
-    const duplicateRows = validation.rows.filter((row) => (
+    const duplicateRows = saveRows.filter((row) => (
       existingDuplicateSet.has(`${row.course_code}:${Number(row.academic_year)}:${row.semester}`)
     ));
 
@@ -107,37 +194,82 @@ export async function POST(request) {
       }, 409);
     }
 
-    const saveRows = buildTranscriptSavePayload(validation.rows);
-    const transcript = await prisma.transcriptUpload.create({
-      data: {
-        student_id: student.student_id,
-        file_name: fileName,
-        extracted_status: 'needs_review',
-      },
-    });
+    const courseMap = new Map(courses.map((course) => [normalizeCourseCode(course.course_code), course]));
+    const rawSaveRows = buildRawExtractedRowPayload(validation.rows);
+    const transcript = await prisma.$transaction(async (tx) => {
+      const createdTranscript = await tx.transcriptUpload.create({
+        data: {
+          student_id: student.student_id,
+          file_name: fileName,
+          extracted_status: 'success',
+        },
+      });
 
-    const courseMap = new Map(courses.map((course) => [course.course_code, course]));
-    await prisma.studentGrade.createMany({
-      data: saveRows.map((row) => ({
-        transcript_id: transcript.transcript_id,
-        student_id: student.student_id,
-        course_id: courseMap.get(row.course_code).course_id,
-        academic_year: row.academic_year,
-        semester: row.semester,
-        grade: row.grade,
-        credits_attempted: row.credits,
-        credits_earned: getCreditsEarned(row.grade, row.credits),
-        is_confirmed: true,
-      })),
+      await tx.transcriptRawRow.createMany({
+        data: rawSaveRows.map((row) => ({
+          transcript_id: createdTranscript.transcript_id,
+          student_id: student.student_id,
+          course_id: courseMap.get(row.course_code)?.course_id,
+          row_index: row.row_index,
+          raw_course_code: row.raw_course_code,
+          raw_course_name: row.raw_course_name,
+          raw_academic_year: row.raw_academic_year,
+          raw_semester: row.raw_semester,
+          raw_credits: row.raw_credits,
+          raw_grade: row.raw_grade,
+          normalized_code: row.course_code,
+          normalized_year: row.academic_year ? Number(row.academic_year) : null,
+          normalized_semester: row.semester,
+          normalized_credits: row.credits ? Number(row.credits) : null,
+          normalized_grade: row.grade,
+          confidence: row.confidence,
+          extraction_status: row.status,
+          validation_status: row.validation_status,
+          issues: row.issues,
+          source_text: row.source_text,
+        })),
+      });
+
+      for (const row of saveRows) {
+        const grade = await tx.studentGrade.create({
+          data: {
+            transcript_id: createdTranscript.transcript_id,
+            student_id: student.student_id,
+            course_id: courseMap.get(row.course_code).course_id,
+            academic_year: row.academic_year,
+            semester: row.semester,
+            grade: row.grade,
+            credits_attempted: row.credits,
+            credits_earned: getCreditsEarned(row.grade, row.credits),
+            is_confirmed: true,
+          },
+        });
+
+        await tx.transcriptRawRow.update({
+          where: {
+            transcript_id_row_index: {
+              transcript_id: createdTranscript.transcript_id,
+              row_index: row.raw_row_index,
+            },
+          },
+          data: { grade_id: grade.grade_id },
+        });
+      }
+
+      return createdTranscript;
     });
 
     return jsonResponse({
       success: true,
       data: {
         transcript_id: transcript.transcript_id,
+        rawRows: rawSaveRows.length,
+        confirmedRows: saveRows.length,
         savedRows: saveRows.length,
-        totalCredits: validation.summary.totalCredits,
-        earnedCredits: validation.summary.earnedCredits,
+        totalCredits: validation.confirmedSummary.totalCredits,
+        earnedCredits: validation.confirmedSummary.earnedCredits,
+        rawTotalCredits: validation.summary.totalCredits,
+        rawEarnedCredits: validation.summary.earnedCredits,
       },
     }, 201);
   } catch (error) {

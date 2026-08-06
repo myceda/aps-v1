@@ -1,5 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { Pool } from 'pg';
 import 'dotenv/config';
 
@@ -67,6 +69,7 @@ type CourseSeed = {
   structureKey: string;
   courseType?: 'required' | 'elective';
   tracks?: string[];
+  isCreditCounted?: boolean;
 };
 
 type PlanSeed = {
@@ -81,6 +84,33 @@ type GradeSeed = {
   academicYear: number;
   semester: string;
   grade: string;
+};
+
+type CurriculumCatalogCourse = {
+  course_code: string;
+  course_name_th: string;
+  course_name_en?: string;
+  credits: number;
+  category: string;
+  course_type?: 'required' | 'elective';
+  is_credit_counted?: boolean;
+};
+
+type CurriculumCatalog = {
+  program: {
+    programCode: string;
+    curriculumYear: number;
+    nameTh: string;
+    nameEn?: string;
+    totalCredits: number;
+  };
+  courses: Record<string, CurriculumCatalogCourse>;
+  studyPlans?: {
+    studyTrack: string;
+    yearLevel: number;
+    semester: string;
+    courseCodes: string[];
+  }[];
 };
 
 const cs65Seed: ProgramSeed = {
@@ -304,6 +334,129 @@ const it65Seed: ProgramSeed = {
   ],
 };
 
+const curriculumCatalogDir = path.join(process.cwd(), 'services', 'pdf-extractor', 'fixtures');
+
+const csCatalogStructureMap: Record<string, string> = {
+  general_required: 'general-required',
+  general_elective: 'general-elective',
+  foundation: 'foundation',
+  core: 'core',
+  major_required: 'major-required',
+  major_elective: 'major-choice-research',
+  research_track_required: 'major-elective-research',
+  cooperative_track_required: 'major-elective-cooperative',
+  external_or_free_elective: 'free-elective',
+  free_elective: 'free-elective',
+};
+
+const itCatalogStructureMap: Record<string, string> = {
+  general_required: 'general',
+  general_elective: 'general',
+  foundation: 'foundation',
+  core: 'core',
+  major_required: 'major-required-research',
+  major_elective: 'major-elective-research',
+  research_track_required: 'major-required-research',
+  cooperative_track_required: 'major-required-cooperative',
+  free_elective: 'free-elective',
+};
+
+const itCourseCodeAliases: Record<string, string> = {
+  'IT-SU101': 'SU101',
+  'IT-SU201': 'SU201',
+  'IT-SU301': 'SU301',
+  'IT-SU402': 'SU402',
+  'IT-SUXXX-GE1': 'SUXXX-GE1',
+  '511100-IT': '511100',
+  '517121-IT': '517121',
+  '520371': '520493',
+  '520372': '520494',
+  '520441': '520481',
+  '520442': '520482',
+};
+
+function loadCurriculumCatalog(fileName: string): CurriculumCatalog {
+  return JSON.parse(readFileSync(path.join(curriculumCatalogDir, fileName), 'utf8')) as CurriculumCatalog;
+}
+
+function normalizeCourseCode(code: string, aliases: Record<string, string>) {
+  return aliases[code] || code;
+}
+
+function normalizeSeedCodes(seed: ProgramSeed, aliases: Record<string, string>): ProgramSeed {
+  return {
+    ...seed,
+    courses: seed.courses.map((course) => ({
+      ...course,
+      code: normalizeCourseCode(course.code, aliases),
+    })),
+    prerequisites: seed.prerequisites.map((prerequisite) => ({
+      ...prerequisite,
+      courseCode: normalizeCourseCode(prerequisite.courseCode, aliases),
+      requiredCourseCode: normalizeCourseCode(prerequisite.requiredCourseCode, aliases),
+    })),
+    plan: seed.plan.map((plan) => ({
+      ...plan,
+      courseCodes: plan.courseCodes.map((courseCode) => normalizeCourseCode(courseCode, aliases)),
+    })),
+  };
+}
+
+function tracksForCatalogCourse(course: CurriculumCatalogCourse) {
+  if (course.category === 'research_track_required') return ['research'];
+  if (course.category === 'cooperative_track_required') return ['cooperative'];
+  return undefined;
+}
+
+function catalogCourseToSeed(course: CurriculumCatalogCourse, structureMap: Record<string, string>): CourseSeed {
+  return {
+    code: course.course_code,
+    nameTh: course.course_name_th,
+    nameEn: course.course_name_en || course.course_name_th,
+    credits: course.credits,
+    structureKey: structureMap[course.category] || 'free-elective',
+    courseType: course.course_type || 'required',
+    tracks: tracksForCatalogCourse(course),
+    isCreditCounted: course.is_credit_counted ?? true,
+  };
+}
+
+function mergeCatalogIntoSeed(
+  seed: ProgramSeed,
+  catalogFileName: string,
+  structureMap: Record<string, string>,
+  aliases: Record<string, string> = {},
+): ProgramSeed {
+  const catalog = loadCurriculumCatalog(catalogFileName);
+  const normalizedSeed = normalizeSeedCodes(seed, aliases);
+  const courseMap = new Map<string, CourseSeed>();
+
+  for (const course of normalizedSeed.courses) {
+    courseMap.set(course.code, course);
+  }
+
+  for (const course of Object.values(catalog.courses)) {
+    courseMap.set(course.course_code, catalogCourseToSeed(course, structureMap));
+  }
+
+  const catalogPlan = catalog.studyPlans?.map((plan) => ({
+    yearLevel: plan.yearLevel,
+    semester: plan.semester,
+    courseCodes: plan.courseCodes,
+    tracks: [plan.studyTrack],
+  }));
+
+  return {
+    ...normalizedSeed,
+    code: catalog.program.programCode,
+    nameTh: catalog.program.nameTh,
+    nameEn: catalog.program.nameEn || normalizedSeed.nameEn,
+    totalCredits: catalog.program.totalCredits,
+    courses: [...courseMap.values()],
+    plan: catalogPlan || normalizedSeed.plan,
+  };
+}
+
 function getEarnedCredits(grade: string, credits: number) {
   return gradePointMap[grade] > 0 || grade === 'S' ? credits : 0;
 }
@@ -340,14 +493,14 @@ async function upsertCourse(seed: CourseSeed) {
       course_name_th: seed.nameTh,
       course_name_en: seed.nameEn,
       credits: seed.credits,
-      is_credit_counted: true,
+      is_credit_counted: seed.isCreditCounted ?? true,
     },
     create: {
       course_code: seed.code,
       course_name_th: seed.nameTh,
       course_name_en: seed.nameEn,
       credits: seed.credits,
-      is_credit_counted: true,
+      is_credit_counted: seed.isCreditCounted ?? true,
     },
   });
 }
@@ -656,8 +809,21 @@ async function seedProgram(seed: ProgramSeed) {
   const program = await upsertProgram(seed);
   const structureMap = new Map<string, { structure_id: string }>();
   const courseMap = new Map<string, { course_id: string; credits: number }>();
+  const seededCourseCodes = [...new Set(seed.courses.map((course) => course.code))];
 
   await clearLegacySeedCurriculumData(program.program_id);
+  await prisma.courseOffering.deleteMany({
+    where: {
+      program_id: program.program_id,
+      course: { course_code: { notIn: seededCourseCodes } },
+    },
+  });
+  await prisma.programCourse.deleteMany({
+    where: {
+      program_id: program.program_id,
+      course: { course_code: { notIn: seededCourseCodes } },
+    },
+  });
 
   for (const structure of seed.structures) {
     structureMap.set(structure.key, await upsertStructure(program.program_id, structure));
@@ -876,8 +1042,11 @@ async function main() {
   await ensureGradeMapping('S', 0, true, true);
   await ensureGradeMapping('U', 0, false, false);
 
-  const cs65 = await seedProgram(cs65Seed);
-  await seedProgram(it65Seed);
+  const cs65CatalogSeed = mergeCatalogIntoSeed(cs65Seed, 'CS2565.curriculum.json', csCatalogStructureMap);
+  const it65CatalogSeed = mergeCatalogIntoSeed(it65Seed, 'IT2565.curriculum.json', itCatalogStructureMap, itCourseCodeAliases);
+
+  const cs65 = await seedProgram(cs65CatalogSeed);
+  await seedProgram(it65CatalogSeed);
 
   await clearSeededStudentAcademicData();
   await seedScenarios(cs65.program.program_id, cs65.courseMap);

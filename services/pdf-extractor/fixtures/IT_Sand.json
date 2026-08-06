@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 2,
+  "fixtureType": "scanned_transcript_manual_entry",
+  "pdf": "C:/Users/MyLuna/thesis-doc-1_69/example-transcript/IT_Sand.pdf",
+  "verification": {
+    "source": "scanned PDF inspected with pdfplumber and OCR fallback",
+    "expectedExtractionMethod": "ocr",
+    "expectedExtractionStatus": "needs_manual_entry",
+    "verifiedAt": "2026-08-03",
+    "notes": [
+      "pdfplumber returns no useful text for this file.",
+      "Current tesseract.js OCR produces too few reliable rows for automatic preview.",
+      "The system must not auto-save or auto-preview unreliable OCR rows; the user should add rows manually from the transcript."
+    ]
+  },
+  "rawRows": [],
+  "effectiveRows": [],
+  "officialFinalSummary": {
+    "registeredCredits": 0,
+    "passedCredits": 0,
+    "attemptedCredits": 0,
+    "gradePoints": 0,
+    "gpax": 0
+  }
+}

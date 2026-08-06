@@ -32,6 +32,7 @@ model Student {
   user               User                        @relation(fields: [user_id], references: [user_id])
   studentPrograms    StudentProgram[]
   studentGrades      StudentGrade[]
+  transcriptRawRows  TranscriptRawRow[]
   transcriptUploads  TranscriptUpload[]
   analysisResults    AnalysisResult[]
   simulationSessions SimulationSession[]
@@ -116,6 +117,7 @@ model Course {
   studyPlanCourses  StudyPlanCourse[]
   courseOfferings   CourseOffering[]
   studentGrades     StudentGrade[]
+  transcriptRawRows TranscriptRawRow[]
   simulationCourses SimulationCourse[]
   gradeMappings     GradeMapping[]
 }
@@ -214,9 +216,48 @@ model TranscriptUpload {
 
   student       Student        @relation(fields: [student_id], references: [student_id])
   studentGrades StudentGrade[]
+  rawRows       TranscriptRawRow[]
 }
 
-// 14. StudentGrade (ผลการเรียนของนักศึกษา)
+// 14. TranscriptRawRow (raw extracted transcript row before confirmation/effective filtering)
+model TranscriptRawRow {
+  raw_row_id        String   @id @default(uuid()) @db.Uuid
+  transcript_id     String   @db.Uuid
+  student_id        String   @db.Uuid
+  course_id         String?  @db.Uuid
+  grade_id          String?  @unique @db.Uuid
+  row_index         Int
+  raw_course_code   String
+  raw_course_name   String?
+  raw_academic_year String?
+  raw_semester      String?
+  raw_credits       String?
+  raw_grade         String?
+  normalized_code   String?
+  normalized_year   Int?
+  normalized_semester String?
+  normalized_credits Int?
+  normalized_grade  String?
+  confidence        Decimal? @db.Decimal(4, 3)
+  extraction_status String
+  validation_status String
+  issues            Json
+  source_text       String?
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+
+  transcript TranscriptUpload @relation(fields: [transcript_id], references: [transcript_id])
+  student    Student          @relation(fields: [student_id], references: [student_id])
+  course     Course?          @relation(fields: [course_id], references: [course_id])
+  grade      StudentGrade?    @relation(fields: [grade_id], references: [grade_id])
+
+  @@unique([transcript_id, row_index])
+  @@index([student_id, created_at])
+  @@index([transcript_id])
+  @@index([course_id])
+}
+
+// 15. StudentGrade (confirmed/effective grades used by analysis)
 model StudentGrade {
   grade_id          String   @id @default(uuid()) @db.Uuid
   transcript_id     String   @db.Uuid
@@ -234,12 +275,13 @@ model StudentGrade {
   transcript TranscriptUpload @relation(fields: [transcript_id], references: [transcript_id])
   student    Student          @relation(fields: [student_id], references: [student_id])
   course     Course           @relation(fields: [course_id], references: [course_id])
+  rawRow     TranscriptRawRow?
 
   @@unique([student_id, course_id, academic_year, semester])
   @@index([transcript_id])
 }
 
-// 15. GradeMapping (grade conversion rules)
+// 16. GradeMapping (grade conversion rules)
 model GradeMapping {
   grade_mapping_id String   @id @default(uuid()) @db.Uuid
   course_id        String?  @db.Uuid
@@ -256,7 +298,7 @@ model GradeMapping {
   @@index([grade])
 }
 
-// 16. TranscriptSemesterSummary (semester GPA summary)
+// 17. TranscriptSemesterSummary (semester GPA summary)
 model TranscriptSemesterSummary {
   summary_id              String   @id @default(uuid()) @db.Uuid
   student_id              String   @db.Uuid
@@ -277,7 +319,7 @@ model TranscriptSemesterSummary {
   @@index([academic_year, semester])
 }
 
-// 17. AnalysisResult (academic analysis result)
+// 18. AnalysisResult (academic analysis result)
 model AnalysisResult {
   result_id                String   @id @default(uuid()) @db.Uuid
   student_id               String   @db.Uuid
@@ -300,7 +342,7 @@ model AnalysisResult {
   @@index([program_id])
 }
 
-// 18. Recommendation (proactive academic recommendation)
+// 19. Recommendation (proactive academic recommendation)
 model Recommendation {
   recommendation_id   String   @id @default(uuid()) @db.Uuid
   result_id           String   @db.Uuid
@@ -319,7 +361,7 @@ model Recommendation {
   @@index([student_id, priority])
 }
 
-// 19. SimulationSession (what-if simulation session)
+// 20. SimulationSession (what-if simulation session)
 model SimulationSession {
   simulation_id   String   @id @default(uuid()) @db.Uuid
   result_id       String   @db.Uuid
@@ -337,7 +379,7 @@ model SimulationSession {
   @@index([student_id, created_at])
 }
 
-// 20. SimulationCourse (course item in a simulation)
+// 21. SimulationCourse (course item in a simulation)
 model SimulationCourse {
   simulation_course_id String   @id @default(uuid()) @db.Uuid
   simulation_id        String   @db.Uuid
@@ -352,7 +394,7 @@ model SimulationCourse {
   @@unique([simulation_id, course_id, action_type])
 }
 
-// 21. Rule (academic analysis rule)
+// 22. Rule (academic analysis rule)
 model Rule {
   rule_id     String   @id @default(uuid()) @db.Uuid
   program_id  String   @db.Uuid
