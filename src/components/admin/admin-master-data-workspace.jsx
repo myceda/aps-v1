@@ -339,7 +339,7 @@ export default function AdminMasterDataWorkspace() {
     <main className="min-h-screen bg-slate-50 text-slate-900">
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
         <header className="flex flex-col gap-2 border-b border-slate-200 pb-5">
-          <p className="text-sm font-bold uppercase tracking-wide text-emerald-700">Phase 1: Admin Master Data</p>
+          <p className="text-sm font-bold uppercase tracking-wide text-emerald-700">Admin Master Data</p>
           <h1 className="text-2xl font-bold text-slate-950 sm:text-3xl">ระบบจัดการข้อมูลหลักสูตรแบบไม่เขียนโค้ด</h1>
           <p className="max-w-3xl text-sm text-slate-600">
             เพิ่ม แก้ไข ลบ และตรวจความพร้อมของข้อมูล Programs, Courses, ProgramStructure, ProgramCourse,

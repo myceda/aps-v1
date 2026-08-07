@@ -71,6 +71,11 @@ export async function GET(request) {
       prisma.transcriptUpload.findFirst({
         where: { student_id: student.student_id },
         orderBy: { uploaded_at: 'desc' },
+        include: {
+          rawRows: {
+            orderBy: { row_index: 'asc' },
+          },
+        },
       }),
     ]);
 

@@ -121,7 +121,7 @@ function RiskPanel({ analysis }) {
     <section className={`rounded-md border p-5 ${panelClass}`}>
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div>
-          <p className="text-sm font-bold uppercase">Phase 4: Student Experience</p>
+          <p className="text-sm font-bold uppercase">Student Dashboard</p>
           <h1 className="mt-2 text-2xl font-bold sm:text-3xl">
             {statusText[risk.academicStatus] || 'กำลังประเมินสถานะ'}
           </h1>
@@ -267,7 +267,7 @@ function WhatIfSimulationPanel({ analysis }) {
     <section className="rounded-md border border-indigo-200 bg-white p-5">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div>
-          <p className="text-sm font-bold uppercase tracking-wide text-indigo-700">Phase 5: What-if Simulation</p>
+          <p className="text-sm font-bold uppercase tracking-wide text-indigo-700">What-if Simulation</p>
           <h2 className="mt-2 text-lg font-bold text-slate-950">จำลอง add / drop / fail ก่อนตัดสินใจลงทะเบียน</h2>
           <p className="mt-1 text-sm text-slate-600">
             เปรียบเทียบ GPAX หน่วยกิต เทอมจบ และผลกระทบ prerequisite/offering จากข้อมูลปัจจุบัน
@@ -533,9 +533,9 @@ export default function StudentDashboardWorkspace() {
         <RiskPanel analysis={analysis} />
 
         <section className="grid gap-4 md:grid-cols-4">
-          <MetricBlock label="GPAX" value={analysis.gpax?.gpax?.toFixed?.(2) || '-'} helper={`${numberText(analysis.gpax?.totalCredits)} หน่วยกิตคำนวณ`} tone={riskTone} />
+          <MetricBlock label="GPAX" value={analysis.gpax?.gpax?.toFixed?.(2) || '-'} helper={`${numberText(analysis.gpax?.attemptedCredits)} หน่วยกิตคำนวณ`} tone={riskTone} />
           <MetricBlock label="หน่วยกิตผ่านแล้ว" value={`${numberText(analysis.credits?.earnedCredits)} / ${numberText(analysis.credits?.requiredCredits)}`} helper={`คืบหน้า ${numberText(analysis.credits?.completionPercent)}%`} tone="success" />
-          <MetricBlock label="หน่วยกิตคงเหลือ" value={numberText(analysis.credits?.remainingCredits)} helper="จากโครงสร้างหลักสูตรล่าสุด" tone={analysis.credits?.remainingCredits > 0 ? 'warning' : 'success'} />
+          <MetricBlock label="หน่วยกิตที่รอ" value={numberText(analysis.transcript?.summary?.pendingCredits)} helper="จาก transcript ล่าสุด" tone={analysis.transcript?.summary?.pendingCredits > 0 ? 'warning' : 'success'} />
           <MetricBlock label="วิชาบังคับคงเหลือ" value={missingCourses.length} helper={`track: ${analysis.studyTrack || 'both'}`} tone={missingCourses.length > 0 ? 'warning' : 'success'} />
         </section>
 

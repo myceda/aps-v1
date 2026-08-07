@@ -4,7 +4,6 @@ import { prisma } from '../../../../lib/prisma.js';
 import {
   buildRawExtractedRowPayload,
   buildTranscriptSavePayload,
-  getCreditsEarned,
   normalizeCourseCode,
   parseTranscriptText,
   applyTranscriptExtractionQualityGate,
@@ -79,6 +78,58 @@ async function getCourseOptions(student) {
   });
 }
 
+function getTranscriptCourseCodes(rows) {
+  return new Set(
+    rows
+      .map((row) => normalizeCourseCode(row.course_code ?? row.raw?.course_code))
+      .filter(Boolean),
+  );
+}
+
+async function inferProgramFromTranscriptRows(rows) {
+  const transcriptCodes = getTranscriptCourseCodes(rows);
+  if (transcriptCodes.size === 0) return null;
+
+  const programs = await prisma.program.findMany({
+    where: { status: 'active' },
+    include: {
+      programCourses: {
+        include: { course: true },
+      },
+    },
+  });
+
+  return programs
+    .map((program) => ({
+      program,
+      matchedCourses: program.programCourses.filter((programCourse) => (
+        transcriptCodes.has(normalizeCourseCode(programCourse.course?.course_code))
+      )).length,
+    }))
+    .filter((candidate) => candidate.matchedCourses > 0)
+    .sort((a, b) => b.matchedCourses - a.matchedCourses)[0]?.program || null;
+}
+
+async function ensureStudentProgramForTranscript(student, rows) {
+  const existingStudentProgram = await prisma.studentProgram.findFirst({
+    where: { student_id: student.student_id },
+    orderBy: { enrolled_at: 'desc' },
+  });
+  if (existingStudentProgram) return existingStudentProgram;
+
+  const inferredProgram = await inferProgramFromTranscriptRows(rows);
+  if (!inferredProgram) return null;
+
+  return prisma.studentProgram.create({
+    data: {
+      student_id: student.student_id,
+      program_id: inferredProgram.program_id,
+      study_track: 'research',
+      enrolled_at: new Date(),
+    },
+  });
+}
+
 export async function GET(request) {
   const auth = await requireStudent(request);
   if (auth.error) return auth.error;
@@ -91,16 +142,98 @@ export async function GET(request) {
   }
 }
 
+export async function DELETE(request) {
+  const auth = await requireStudent(request);
+  if (auth.error) return auth.error;
+
+  try {
+    const studentId = auth.student.student_id;
+    const deleted = await prisma.$transaction(async (tx) => {
+      const analysisResults = await tx.analysisResult.findMany({
+        where: { student_id: studentId },
+        select: { result_id: true },
+      });
+      const resultIds = analysisResults.map((result) => result.result_id);
+
+      const simulationSessions = await tx.simulationSession.findMany({
+        where: { student_id: studentId },
+        select: { simulation_id: true },
+      });
+      const simulationIds = simulationSessions.map((session) => session.simulation_id);
+
+      const deletedSimulationCourses = simulationIds.length > 0
+        ? await tx.simulationCourse.deleteMany({
+          where: { simulation_id: { in: simulationIds } },
+        })
+        : { count: 0 };
+
+      const deletedSimulations = await tx.simulationSession.deleteMany({
+        where: { student_id: studentId },
+      });
+
+      const deletedRecommendations = await tx.recommendation.deleteMany({
+        where: {
+          OR: [
+            { student_id: studentId },
+            ...(resultIds.length > 0 ? [{ result_id: { in: resultIds } }] : []),
+          ],
+        },
+      });
+
+      const deletedAnalysis = await tx.analysisResult.deleteMany({
+        where: { student_id: studentId },
+      });
+
+      const deletedSemesterSummaries = await tx.transcriptSemesterSummary.deleteMany({
+        where: { student_id: studentId },
+      });
+
+      await tx.transcriptRawRow.updateMany({
+        where: { student_id: studentId },
+        data: { grade_id: null },
+      });
+
+      const deletedGrades = await tx.studentGrade.deleteMany({
+        where: { student_id: studentId },
+      });
+
+      const deletedRawRows = await tx.transcriptRawRow.deleteMany({
+        where: { student_id: studentId },
+      });
+
+      const deletedUploads = await tx.transcriptUpload.deleteMany({
+        where: { student_id: studentId },
+      });
+
+      return {
+        uploads: deletedUploads.count,
+        rawRows: deletedRawRows.count,
+        grades: deletedGrades.count,
+        semesterSummaries: deletedSemesterSummaries.count,
+        analysisResults: deletedAnalysis.count,
+        recommendations: deletedRecommendations.count,
+        simulations: deletedSimulations.count,
+        simulationCourses: deletedSimulationCourses.count,
+      };
+    });
+
+    return jsonResponse({ success: true, data: deleted });
+  } catch (error) {
+    return jsonResponse({ success: false, error: error.message || 'ล้างข้อมูล transcript ไม่สำเร็จ' }, 500);
+  }
+}
+
 async function extractTranscriptRows(request, student) {
   const upload = await readTranscriptFile(request);
   if (upload.error) {
     return jsonResponse({ success: false, error: upload.error }, 422);
   }
 
-  const courses = await getCourseOptions(student);
   const extraction = await extractPdfTranscriptText(upload.buffer, upload.fileName);
   const parsedRows = parseTranscriptText(extraction.text);
   const gatedResult = applyTranscriptExtractionQualityGate(extraction, parsedRows);
+  await ensureStudentProgramForTranscript(student, gatedResult.rows.length > 0 ? gatedResult.rows : parsedRows);
+  const courses = await getCourseOptions(student);
   const validation = validateTranscriptRows(gatedResult.rows, courses);
   const manualReviewRequired = gatedResult.extraction.status === 'needs_manual_entry';
 
@@ -161,7 +294,15 @@ export async function POST(request) {
 
   try {
     const student = auth.student;
+    await ensureStudentProgramForTranscript(student, rawRows);
     const courses = await getCourseOptions(student);
+    if (courses.length === 0) {
+      return jsonResponse({
+        success: false,
+        error: 'ยังไม่พบหลักสูตรสำหรับจับคู่รายวิชา กรุณาตรวจรหัสวิชาหรือให้ผู้ดูแลระบบกำหนดหลักสูตรให้นักศึกษา',
+      }, 422);
+    }
+
     const validation = validateTranscriptRows(rawRows, courses);
 
     if (validation.summary.issueRows > 0) {
@@ -239,8 +380,8 @@ export async function POST(request) {
             academic_year: row.academic_year,
             semester: row.semester,
             grade: row.grade,
-            credits_attempted: row.credits,
-            credits_earned: getCreditsEarned(row.grade, row.credits),
+            credits_attempted: row.credits_attempted,
+            credits_earned: row.credits_earned,
             is_confirmed: true,
           },
         });

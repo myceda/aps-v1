@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import {
   allowedGrades,
   allowedSemesters,
@@ -28,6 +29,7 @@ function SummaryMetric({ label, value, tone = 'default' }) {
 }
 
 export default function TranscriptToolsWorkspace() {
+  const router = useRouter();
   const [fileInfo, setFileInfo] = useState(null);
   const [rows, setRows] = useState([]);
   const [courses, setCourses] = useState([]);
@@ -36,6 +38,7 @@ export default function TranscriptToolsWorkspace() {
   const [extractionSummary, setExtractionSummary] = useState(null);
   const [manualReview, setManualReview] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [resetting, setResetting] = useState(false);
   const [message, setMessage] = useState('');
   const [saveSummary, setSaveSummary] = useState(null);
 
@@ -60,7 +63,7 @@ export default function TranscriptToolsWorkspace() {
   }, []);
 
   const validation = useMemo(() => validateTranscriptRows(rows, courses), [rows, courses]);
-  const canSave = validation.summary.totalRows > 0 && validation.summary.issueRows === 0 && !saving && !extracting;
+  const canSave = validation.summary.totalRows > 0 && validation.summary.issueRows === 0 && !saving && !extracting && !resetting;
 
   async function handleFileChange(event) {
     const file = event.target.files?.[0];
@@ -184,6 +187,7 @@ export default function TranscriptToolsWorkspace() {
       }
 
       setSaveSummary(result.data);
+      router.push('/student/dashboard');
       setMessage('บันทึก transcript เรียบร้อยแล้ว');
     } catch (error) {
       setMessage(error.message || 'บันทึกไม่สำเร็จ');
@@ -192,11 +196,44 @@ export default function TranscriptToolsWorkspace() {
     }
   }
 
+  async function resetSavedTranscript() {
+    const confirmed = window.confirm(
+      'ต้องการล้างข้อมูล transcript เดิมที่เคยบันทึกไว้หรือไม่? หลังล้างแล้วต้องอัปโหลดหรือกรอก transcript ใหม่ก่อนดู dashboard',
+    );
+    if (!confirmed) return;
+
+    setResetting(true);
+    setMessage('');
+    setSaveSummary(null);
+
+    try {
+      const response = await fetch('/api/student/transcript', {
+        method: 'DELETE',
+      });
+      const result = await response.json();
+
+      if (!result.success) {
+        setMessage(result.error || 'ล้างข้อมูล transcript ไม่สำเร็จ');
+        return;
+      }
+
+      setRows([]);
+      setFileInfo(null);
+      setExtractionSummary(null);
+      setManualReview(null);
+      setMessage('ล้างข้อมูล transcript เดิมเรียบร้อยแล้ว สามารถอัปโหลดไฟล์ใหม่ได้');
+    } catch (error) {
+      setMessage(error.message || 'ล้างข้อมูล transcript ไม่สำเร็จ');
+    } finally {
+      setResetting(false);
+    }
+  }
+
   return (
     <main className="min-h-screen bg-slate-50 text-slate-900">
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
         <header className="flex flex-col gap-2 border-b border-slate-200 pb-5">
-          <p className="text-sm font-bold uppercase tracking-wide text-indigo-700">Phase 2: Student Transcript</p>
+          <p className="text-sm font-bold uppercase tracking-wide text-indigo-700">Student Transcript</p>
           <h1 className="text-2xl font-bold text-slate-950 sm:text-3xl">เครื่องมืออัปโหลดและตรวจ transcript</h1>
           <p className="max-w-3xl text-sm text-slate-600">
             อัปโหลด PDF เพื่อสร้างตารางตรวจทาน แก้ข้อมูลให้ถูกต้อง แล้วบันทึกเกรดที่ยืนยันแล้วเข้าสู่ระบบ APS
@@ -283,6 +320,14 @@ export default function TranscriptToolsWorkspace() {
                 className="rounded-md bg-indigo-700 px-4 py-3 text-sm font-bold text-white transition hover:bg-indigo-800 disabled:cursor-not-allowed disabled:bg-slate-400"
               >
                 {saving ? 'กำลังบันทึก...' : 'ยืนยันและบันทึก transcript'}
+              </button>
+              <button
+                type="button"
+                disabled={saving || extracting || resetting}
+                onClick={resetSavedTranscript}
+                className="rounded-md border border-rose-200 bg-white px-4 py-3 text-sm font-bold text-rose-700 transition hover:border-rose-400 hover:bg-rose-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+              >
+                {resetting ? 'กำลังล้างข้อมูล...' : 'ล้างข้อมูล transcript เดิม'}
               </button>
             </div>
 

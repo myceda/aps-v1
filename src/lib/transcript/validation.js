@@ -9,12 +9,29 @@ import {
   normalizeSemester,
 } from './normalizer.js';
 
+const gradePointMap = new Map([
+  ['A', 4],
+  ['B+', 3.5],
+  ['B', 3],
+  ['C+', 2.5],
+  ['C', 2],
+  ['D+', 1.5],
+  ['D', 1],
+  ['F', 0],
+]);
+
 export function isBlankTranscriptRow(row) {
   return !normalizeCourseCode(row.course_code)
     && !String(row.course_name || '').trim()
     && !normalizeAcademicYear(row.academic_year)
     && !String(row.credits ?? '').trim()
     && !normalizeGrade(row.grade ?? row.rawGrade ?? row.raw_grade);
+}
+
+function sanitizeDatabaseText(value) {
+  return String(value ?? '')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
+    .trim();
 }
 
 export function validateTranscriptRows(rows, courseCatalog = []) {
@@ -133,36 +150,75 @@ export function validateTranscriptRows(rows, courseCatalog = []) {
   };
 }
 
-function shouldCreateConfirmedGrade(row) {
+function getEffectiveTranscriptStatus(row, latestRowsByCode) {
   const grade = normalizeGrade(row.grade);
-  const status = String(row.status || '').toLowerCase();
+  const sourceRow = Number(row.row_index ?? row.row ?? 0);
+
+  if (normalizeSemester(row.semester) === 'transfer') return grade === 'S' ? 'transfer' : 'transfer_needs_review';
+  if (grade === 'W') return 'withdrawn';
+  if (!grade || grade === 'I' || grade === 'IP') return 'pending_grade';
+  if (grade === 'U') return 'unsatisfactory';
+  if (grade === 'F' && latestRowsByCode.get(normalizeCourseCode(row.course_code)) !== sourceRow) return 'failed_repeated_later';
+  if (latestRowsByCode.get(normalizeCourseCode(row.course_code)) !== sourceRow) return 'repeated_later';
+  if (grade === 'S' && row.course?.is_credit_counted === false) return 'non_credit_satisfied';
+  if (grade === 'S') return 'passed_satisfactory';
+  return 'passed';
+}
+
+function buildLatestRowsByCode(rows) {
+  const latestRowsByCode = new Map();
+
+  for (const row of rows) {
+    const grade = normalizeGrade(row.grade);
+    if (!grade || grade === 'W') continue;
+    latestRowsByCode.set(normalizeCourseCode(row.course_code), Number(row.row_index ?? row.row ?? 0));
+  }
+
+  return latestRowsByCode;
+}
+
+function shouldCreateConfirmedGrade(row, latestRowsByCode) {
+  const status = getEffectiveTranscriptStatus(row, latestRowsByCode);
   const skippedStatuses = new Set([
     'withdrawn',
     'pending_grade',
     'unsatisfactory',
+    'transfer_needs_review',
     'non_credit_satisfied',
     'repeated_later',
     'failed_repeated_later',
-    'transfer',
   ]);
 
   return row.validation_status === 'valid'
     && row.course
-    && row.course.is_credit_counted !== false
-    && normalizeSemester(row.semester) !== 'transfer'
-    && !skippedStatuses.has(status)
-    && !['', 'W', 'I', 'IP', 'U'].includes(grade);
+    && !skippedStatuses.has(status);
 }
 
 export function buildConfirmedGradePayload(rows) {
-  return rows.filter(shouldCreateConfirmedGrade).map((row) => ({
-    course_code: normalizeCourseCode(row.course_code),
-    academic_year: Number(normalizeAcademicYear(row.academic_year)),
-    semester: normalizeSemester(row.semester),
-    grade: normalizeGrade(row.grade),
-    credits: Number(normalizeCredits(row.credits)),
-    raw_row_index: Number(row.row_index ?? row.row ?? 0),
-  }));
+  const latestRowsByCode = buildLatestRowsByCode(rows);
+
+  return rows.filter((row) => shouldCreateConfirmedGrade(row, latestRowsByCode)).map((row) => {
+    const grade = normalizeGrade(row.grade);
+    const credits = Number(normalizeCredits(row.credits));
+    const point = gradePointMap.get(grade);
+    const status = getEffectiveTranscriptStatus(row, latestRowsByCode);
+    const isGpaxCounted = gradePointMap.has(grade);
+    const isCreditCounted = status === 'transfer' ? true : row.course?.is_credit_counted !== false;
+
+    return {
+      course_code: normalizeCourseCode(row.course_code),
+      academic_year: Number(normalizeAcademicYear(row.academic_year)),
+      semester: normalizeSemester(row.semester),
+      grade,
+      credits,
+      credits_registered: credits,
+      credits_attempted: isGpaxCounted ? credits : 0,
+      credits_earned: isCreditCounted && (isGpaxCounted ? point > 0 : grade === 'S') ? credits : 0,
+      gradePoints: isGpaxCounted ? credits * point : 0,
+      status,
+      raw_row_index: Number(row.row_index ?? row.row ?? 0),
+    };
+  });
 }
 
 export const buildTranscriptSavePayload = buildConfirmedGradePayload;
@@ -170,8 +226,8 @@ export const buildTranscriptSavePayload = buildConfirmedGradePayload;
 export function buildConfirmedGradeSummary(rows) {
   return {
     totalRows: rows.length,
-    totalCredits: rows.reduce((sum, row) => sum + (Number(row.credits) || 0), 0),
-    earnedCredits: rows.reduce((sum, row) => sum + getCreditsEarned(row.grade, row.credits), 0),
+    totalCredits: rows.reduce((sum, row) => sum + (Number(row.credits_attempted ?? row.credits) || 0), 0),
+    earnedCredits: rows.reduce((sum, row) => sum + (Number(row.credits_earned) || 0), 0),
   };
 }
 
@@ -179,20 +235,20 @@ export function buildRawExtractedRowPayload(rows) {
   return rows.filter((row) => !isBlankTranscriptRow(row)).map((row, index) => ({
     row_index: Number(row.row_index ?? row.row ?? index + 1),
     course_code: normalizeCourseCode(row.course_code),
-    course_name: row.course_name || '',
-    academic_year: row.academic_year || '',
+    course_name: sanitizeDatabaseText(row.course_name),
+    academic_year: sanitizeDatabaseText(row.academic_year),
     semester: normalizeSemester(row.semester),
     credits: normalizeCredits(row.credits),
     grade: normalizeGrade(row.grade),
-    raw_course_code: String(row.raw?.course_code ?? row.course_code ?? ''),
-    raw_course_name: String(row.raw?.course_name ?? row.course_name ?? ''),
-    raw_academic_year: String(row.raw?.academic_year ?? row.academic_year ?? ''),
-    raw_semester: String(row.raw?.semester ?? row.semester ?? ''),
-    raw_credits: String(row.raw?.credits ?? row.credits ?? ''),
-    raw_grade: String(row.raw?.grade ?? row.rawGrade ?? row.grade ?? ''),
-    source_text: String(row.raw?.source_text ?? row.source_text ?? ''),
-    status: row.status || 'needs_review',
-    validation_status: row.validation_status || 'invalid',
+    raw_course_code: sanitizeDatabaseText(row.raw?.course_code ?? row.course_code),
+    raw_course_name: sanitizeDatabaseText(row.raw?.course_name ?? row.course_name),
+    raw_academic_year: sanitizeDatabaseText(row.raw?.academic_year ?? row.academic_year),
+    raw_semester: sanitizeDatabaseText(row.raw?.semester ?? row.semester),
+    raw_credits: sanitizeDatabaseText(row.raw?.credits ?? row.credits),
+    raw_grade: sanitizeDatabaseText(row.raw?.grade ?? row.rawGrade ?? row.grade),
+    source_text: sanitizeDatabaseText(row.raw?.source_text ?? row.source_text),
+    status: sanitizeDatabaseText(row.status || 'needs_review'),
+    validation_status: sanitizeDatabaseText(row.validation_status || 'invalid'),
     confidence: Number(row.confidence || 0),
     issues: row.issues || [],
   }));
