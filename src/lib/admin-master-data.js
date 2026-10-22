@@ -33,7 +33,7 @@ export const adminEntities = {
       { name: 'course_name_th', label: 'ชื่อวิชาภาษาไทย', type: 'text', required: true },
       { name: 'course_name_en', label: 'ชื่อวิชาภาษาอังกฤษ', type: 'text', required: true },
       { name: 'credits', label: 'หน่วยกิต', type: 'number', required: true },
-      { name: 'is_credit_counted', label: 'นับหน่วยกิต', type: 'boolean' },
+      { name: 'is_credit_counted', label: 'นับหน่วยกิต', type: 'boolean', defaultValue: true },
       { name: 'description', label: 'คำอธิบายรายวิชา', type: 'textarea' },
     ],
   },
@@ -110,12 +110,15 @@ export const adminEntities = {
     title: 'กติกาการวิเคราะห์',
     model: 'rule',
     idField: 'rule_id',
-    orderBy: [{ rule_code: 'asc' }],
+    orderBy: [{ rule_type: 'asc' }, { rule_name: 'asc' }],
+    include: { program: true },
     fields: [
-      { name: 'rule_code', label: 'รหัสกติกา', type: 'text', required: true },
+      { name: 'program_id', label: 'หลักสูตร', type: 'relation', source: 'programs', valueField: 'program_id', labelField: 'program_code', required: true },
+      { name: 'rule_type', label: 'ประเภทกติกา', type: 'text', required: true },
       { name: 'rule_name', label: 'ชื่อกติกา', type: 'text', required: true },
-      { name: 'condition', label: 'เงื่อนไข JSON', type: 'json', required: true },
+      { name: 'rule_value', label: 'ค่ากติกา (JSON)', type: 'json', required: true },
       { name: 'description', label: 'คำอธิบาย', type: 'textarea' },
+      { name: 'is_active', label: 'เปิดใช้งาน', type: 'boolean', defaultValue: true },
     ],
   },
 };
@@ -142,7 +145,9 @@ export function buildRecordPayload(config, rawPayload) {
     }
 
     if (isEmpty) {
-      if (field.type === 'boolean') data[field.name] = false;
+      if (field.type === 'boolean' && field.defaultValue !== undefined) {
+        data[field.name] = field.defaultValue;
+      }
       continue;
     }
 
@@ -157,13 +162,24 @@ export function buildRecordPayload(config, rawPayload) {
     }
 
     if (field.type === 'boolean') {
-      data[field.name] = Boolean(rawValue);
+      if (typeof rawValue === 'boolean') {
+        data[field.name] = rawValue;
+      } else if (rawValue === 'true' || rawValue === 'false') {
+        data[field.name] = rawValue === 'true';
+      } else {
+        errors.push(`${field.label} ต้องเป็นค่า true หรือ false`);
+      }
       continue;
     }
 
     if (field.type === 'json') {
       try {
-        data[field.name] = typeof rawValue === 'string' ? JSON.parse(rawValue) : rawValue;
+        const value = typeof rawValue === 'string' ? JSON.parse(rawValue) : rawValue;
+        if (value === null) {
+          errors.push(`${field.label} ต้องเป็น JSON ที่ไม่ใช่ null`);
+        } else {
+          data[field.name] = value;
+        }
       } catch {
         errors.push(`${field.label} ต้องเป็น JSON ที่ถูกต้อง`);
       }

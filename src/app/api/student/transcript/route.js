@@ -1,5 +1,4 @@
-import { NextResponse } from 'next/server';
-import { requireStudent } from '../../../../lib/auth/index.js';
+import { requireCs2565StudentContext } from '../../../../lib/auth/student-context.js';
 import { prisma } from '../../../../lib/prisma.js';
 import {
   buildRawExtractedRowPayload,
@@ -14,7 +13,7 @@ import { extractPdfTranscriptText } from '../../../../../services/pdf-extractor/
 export const runtime = 'nodejs';
 
 function jsonResponse(payload, status = 200) {
-  return NextResponse.json(payload, { status });
+  return Response.json(payload, { status });
 }
 
 async function readBody(request) {
@@ -53,17 +52,11 @@ function buildExistingDuplicateSet(grades) {
   );
 }
 
-async function getCourseOptions(student) {
+async function getCourseOptions(programId) {
   return prisma.course.findMany({
     where: {
       programCourses: {
-        some: {
-          program: {
-            studentPrograms: {
-              some: { student_id: student.student_id },
-            },
-          },
-        },
+        some: { program_id: programId },
       },
     },
     orderBy: { course_code: 'asc' },
@@ -78,64 +71,12 @@ async function getCourseOptions(student) {
   });
 }
 
-function getTranscriptCourseCodes(rows) {
-  return new Set(
-    rows
-      .map((row) => normalizeCourseCode(row.course_code ?? row.raw?.course_code))
-      .filter(Boolean),
-  );
-}
-
-async function inferProgramFromTranscriptRows(rows) {
-  const transcriptCodes = getTranscriptCourseCodes(rows);
-  if (transcriptCodes.size === 0) return null;
-
-  const programs = await prisma.program.findMany({
-    where: { status: 'active' },
-    include: {
-      programCourses: {
-        include: { course: true },
-      },
-    },
-  });
-
-  return programs
-    .map((program) => ({
-      program,
-      matchedCourses: program.programCourses.filter((programCourse) => (
-        transcriptCodes.has(normalizeCourseCode(programCourse.course?.course_code))
-      )).length,
-    }))
-    .filter((candidate) => candidate.matchedCourses > 0)
-    .sort((a, b) => b.matchedCourses - a.matchedCourses)[0]?.program || null;
-}
-
-async function ensureStudentProgramForTranscript(student, rows) {
-  const existingStudentProgram = await prisma.studentProgram.findFirst({
-    where: { student_id: student.student_id },
-    orderBy: { enrolled_at: 'desc' },
-  });
-  if (existingStudentProgram) return existingStudentProgram;
-
-  const inferredProgram = await inferProgramFromTranscriptRows(rows);
-  if (!inferredProgram) return null;
-
-  return prisma.studentProgram.create({
-    data: {
-      student_id: student.student_id,
-      program_id: inferredProgram.program_id,
-      study_track: 'research',
-      enrolled_at: new Date(),
-    },
-  });
-}
-
 export async function GET(request) {
-  const auth = await requireStudent(request);
-  if (auth.error) return auth.error;
-
   try {
-    const courses = await getCourseOptions(auth.student);
+    const context = await requireCs2565StudentContext(request);
+    if (context.error) return context.error;
+
+    const courses = await getCourseOptions(context.program.program_id);
     return jsonResponse({ success: true, data: { courses } });
   } catch (error) {
     return jsonResponse({ success: false, error: error.message || 'โหลดคลังรายวิชาไม่สำเร็จ' }, 500);
@@ -143,11 +84,11 @@ export async function GET(request) {
 }
 
 export async function DELETE(request) {
-  const auth = await requireStudent(request);
-  if (auth.error) return auth.error;
-
   try {
-    const studentId = auth.student.student_id;
+    const context = await requireCs2565StudentContext(request);
+    if (context.error) return context.error;
+
+    const studentId = context.student.student_id;
     const deleted = await prisma.$transaction(async (tx) => {
       const analysisResults = await tx.analysisResult.findMany({
         where: { student_id: studentId },
@@ -223,7 +164,7 @@ export async function DELETE(request) {
   }
 }
 
-async function extractTranscriptRows(request, student) {
+async function extractTranscriptRows(request, context) {
   const upload = await readTranscriptFile(request);
   if (upload.error) {
     return jsonResponse({ success: false, error: upload.error }, 422);
@@ -232,8 +173,7 @@ async function extractTranscriptRows(request, student) {
   const extraction = await extractPdfTranscriptText(upload.buffer, upload.fileName);
   const parsedRows = parseTranscriptText(extraction.text);
   const gatedResult = applyTranscriptExtractionQualityGate(extraction, parsedRows);
-  await ensureStudentProgramForTranscript(student, gatedResult.rows.length > 0 ? gatedResult.rows : parsedRows);
-  const courses = await getCourseOptions(student);
+  const courses = await getCourseOptions(context.program.program_id);
   const validation = validateTranscriptRows(gatedResult.rows, courses);
   const manualReviewRequired = gatedResult.extraction.status === 'needs_manual_entry';
 
@@ -264,13 +204,18 @@ async function extractTranscriptRows(request, student) {
 }
 
 export async function POST(request) {
-  const auth = await requireStudent(request);
-  if (auth.error) return auth.error;
+  let context;
+  try {
+    context = await requireCs2565StudentContext(request);
+    if (context.error) return context.error;
+  } catch (error) {
+    return jsonResponse({ success: false, error: error.message || 'ตรวจสอบหลักสูตรนักศึกษาไม่สำเร็จ' }, 500);
+  }
 
   const contentType = request.headers.get('content-type') || '';
   if (contentType.includes('multipart/form-data')) {
     try {
-      return await extractTranscriptRows(request, auth.student);
+      return await extractTranscriptRows(request, context);
     } catch (error) {
       return jsonResponse({ success: false, error: error.message || 'สกัดข้อมูลจาก PDF ไม่สำเร็จ' }, 500);
     }
@@ -293,9 +238,8 @@ export async function POST(request) {
   }
 
   try {
-    const student = auth.student;
-    await ensureStudentProgramForTranscript(student, rawRows);
-    const courses = await getCourseOptions(student);
+    const student = context.student;
+    const courses = await getCourseOptions(context.program.program_id);
     if (courses.length === 0) {
       return jsonResponse({
         success: false,

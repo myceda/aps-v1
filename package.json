@@ -7,7 +7,11 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test:transcript-extraction": "node scripts/test-transcript-extraction.mjs"
+    "test:student-api-context": "node --experimental-test-module-mocks --test scripts/test-student-api-context.mjs",
+    "test:transcript-extraction": "node scripts/test-transcript-extraction.mjs",
+    "test:constraint-planner": "node scripts/test-constraint-planner.mjs",
+    "test:what-if-simulation": "node scripts/test-what-if-simulation.mjs",
+    "test:academic-risk": "node scripts/test-academic-risk.mjs"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.9.1",

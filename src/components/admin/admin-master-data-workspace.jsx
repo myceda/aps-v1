@@ -27,13 +27,23 @@ const entityLabels = {
   'publish-readiness': 'Publish checklist',
 };
 
+const readinessSummaryLabels = {
+  structures: 'หมวดโครงสร้าง',
+  programCourses: 'รายวิชาในหลักสูตร',
+  prerequisites: 'วิชาบังคับก่อน',
+  studyPlans: 'แผนการเรียน',
+  studyPlanCourses: 'รายวิชาในแผน',
+  courseOfferings: 'รายการเปิดสอน',
+  activeRules: 'กติกาที่เปิดใช้',
+};
+
 const emptyCounts = Object.fromEntries(entityOrder.map((key) => [key, 0]));
 
 function createInitialForm(config) {
   return Object.fromEntries(
     config.fields.map((field) => {
-      if (field.type === 'boolean') return [field.name, true];
-      if (field.type === 'json') return [field.name, '{\n  "type": "custom"\n}'];
+      if (field.type === 'boolean') return [field.name, field.defaultValue ?? false];
+      if (field.type === 'json') return [field.name, '{}'];
       if (field.options) return [field.name, field.options[0]];
       return [field.name, ''];
     }),
@@ -48,7 +58,9 @@ function getRecordTitle(record, entityKey) {
   if (entityKey === 'prerequisites') return `${record.requiredCourse?.course_code || '-'} -> ${record.course?.course_code || '-'}`;
   if (entityKey === 'study-plans') return `${record.program?.program_code || ''} ปี ${record.year_level}/${record.semester}`;
   if (entityKey === 'course-offerings') return `${record.course?.course_code || ''} ${record.academic_year}/${record.semester}`;
-  if (entityKey === 'rules') return `${record.rule_code} ${record.rule_name}`;
+  if (entityKey === 'rules') {
+    return `${record.program?.program_code || ''} ${record.rule_type}: ${record.rule_name}`.trim();
+  }
   return Object.values(record).filter(Boolean).slice(0, 2).join(' ');
 }
 
@@ -73,19 +85,6 @@ function collectCounts(allData) {
   }, { ...emptyCounts });
 }
 
-function buildReadinessItems(counts) {
-  return [
-    { label: 'มีหลักสูตรอย่างน้อย 1 รายการ', done: counts.programs > 0 },
-    { label: 'มีคลังรายวิชาอย่างน้อย 1 รายการ', done: counts.courses > 0 },
-    { label: 'กำหนดโครงสร้างหลักสูตรแล้ว', done: counts['program-structures'] > 0 },
-    { label: 'ผูกรายวิชาเข้ากับหลักสูตรแล้ว', done: counts['program-courses'] > 0 },
-    { label: 'มีเงื่อนไขวิชาบังคับก่อนให้ตรวจสอบ', done: counts.prerequisites > 0 },
-    { label: 'มีแผนการเรียนแนะนำ', done: counts['study-plans'] > 0 },
-    { label: 'มีข้อมูลรายวิชาที่เปิดสอน', done: counts['course-offerings'] > 0 },
-    { label: 'มีกติกาการวิเคราะห์สำหรับระบบ', done: counts.rules > 0 },
-  ];
-}
-
 export default function AdminMasterDataWorkspace() {
   const [activeKey, setActiveKey] = useState('programs');
   const [records, setRecords] = useState([]);
@@ -96,14 +95,14 @@ export default function AdminMasterDataWorkspace() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
+  const [readiness, setReadiness] = useState(null);
+  const [readinessLoading, setReadinessLoading] = useState(false);
+  const [readinessError, setReadinessError] = useState('');
 
   const activeConfig = adminEntities[activeKey];
   const counts = useMemo(() => collectCounts(allData), [allData]);
-  const readinessItems = useMemo(() => buildReadinessItems(counts), [counts]);
-  const readinessPercent = Math.round((readinessItems.filter((item) => item.done).length / readinessItems.length) * 100);
 
-  const loadEntity = useCallback(async (entityKey = activeKey) => {
-    if (entityKey === 'publish-readiness') return;
+  const loadEntity = useCallback(async (entityKey) => {
     setLoading(true);
     setMessage('');
 
@@ -124,15 +123,40 @@ export default function AdminMasterDataWorkspace() {
     } finally {
       setLoading(false);
     }
-  }, [activeKey]);
+  }, []);
+
+  const loadReadiness = useCallback(async () => {
+    setReadinessLoading(true);
+    setReadinessError('');
+
+    try {
+      const response = await fetch('/api/admin/readiness', { cache: 'no-store' });
+      const result = await response.json();
+
+      if (!result.success) {
+        setReadinessError(result.error || 'โหลดผลตรวจความพร้อมไม่สำเร็จ');
+        return;
+      }
+
+      setReadiness(result);
+    } catch (error) {
+      setReadinessError(error.message || 'โหลดผลตรวจความพร้อมไม่สำเร็จ');
+    } finally {
+      setReadinessLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      loadEntity(activeKey);
+      if (activeKey === 'publish-readiness') {
+        loadReadiness();
+      } else {
+        loadEntity(activeKey);
+      }
     }, 0);
 
     return () => window.clearTimeout(timer);
-  }, [activeKey, loadEntity]);
+  }, [activeKey, loadEntity, loadReadiness]);
 
   function changeStep(nextKey) {
     setActiveKey(nextKey);
@@ -184,7 +208,7 @@ export default function AdminMasterDataWorkspace() {
     const nextForm = {};
     for (const field of activeConfig.fields) {
       const value = record[field.name];
-      nextForm[field.name] = field.type === 'json' ? JSON.stringify(value || {}, null, 2) : value ?? '';
+      nextForm[field.name] = field.type === 'json' ? JSON.stringify(value ?? {}, null, 2) : value ?? '';
     }
     setEditingId(record[activeConfig.idField]);
     setFormData(nextForm);
@@ -253,7 +277,11 @@ export default function AdminMasterDataWorkspace() {
     }
 
     if (field.type === 'relation') {
-      const options = lookups[field.source] || [];
+      const options = (lookups[field.source] || []).filter((option) => (
+        activeKey !== 'rules'
+        || field.source !== 'programs'
+        || option.program_code === 'CS2565'
+      ));
       return (
         <select
           className={baseClass}
@@ -303,30 +331,60 @@ export default function AdminMasterDataWorkspace() {
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h2 className="text-xl font-bold text-slate-950">Publish readiness checklist</h2>
-              <p className="mt-1 text-sm text-slate-600">ตรวจความพร้อมข้อมูลก่อนปล่อยให้ฝั่งนักศึกษาและ advisor ใช้งาน</p>
+              <p className="mt-1 text-sm text-slate-600">ตรวจข้อมูล CS2565 จาก server ก่อนนำไปใช้วิเคราะห์</p>
             </div>
-            <span className="rounded-md bg-emerald-100 px-3 py-2 text-sm font-bold text-emerald-800">{readinessPercent}% พร้อม</span>
+            <div className="flex items-center gap-2">
+              {readiness && (
+                <span className={`rounded-md px-3 py-2 text-sm font-bold ${
+                  readiness.ready
+                    ? 'bg-emerald-100 text-emerald-800'
+                    : 'bg-amber-100 text-amber-800'
+                }`}>
+                  {readiness.percentage}% พร้อม
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={loadReadiness}
+                disabled={readinessLoading}
+                className="rounded-md border border-slate-300 px-3 py-2 text-sm font-bold text-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                ตรวจใหม่
+              </button>
+            </div>
           </div>
 
-          <div className="mt-6 grid gap-3">
-            {readinessItems.map((item) => (
-              <div key={item.label} className="flex items-center justify-between gap-4 rounded-md border border-slate-200 px-4 py-3">
-                <span className="text-sm font-medium text-slate-800">{item.label}</span>
-                <span className={`rounded-md px-2 py-1 text-xs font-bold ${item.done ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
-                  {item.done ? 'ผ่าน' : 'ต้องเติม'}
-                </span>
+          <div className="mt-6 grid gap-3" aria-live="polite">
+            {readinessLoading && !readiness ? (
+              <p className="text-sm text-slate-500">กำลังตรวจความพร้อม...</p>
+            ) : readinessError ? (
+              <div className="rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+                {readinessError}
               </div>
-            ))}
+            ) : (
+              (readiness?.checks || []).map((item) => (
+                <div key={item.id} className="flex items-start justify-between gap-4 rounded-md border border-slate-200 px-4 py-3">
+                  <div>
+                    <p className="text-sm font-bold text-slate-800">{item.label}</p>
+                    <p className="mt-1 text-xs text-slate-500">{item.detail}</p>
+                  </div>
+                  <span className={`shrink-0 rounded-md px-2 py-1 text-xs font-bold ${item.passed ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+                    {item.passed ? 'ผ่าน' : 'ต้องแก้ไข'}
+                  </span>
+                </div>
+              ))
+            )}
           </div>
         </div>
 
         <aside className="rounded-md border border-slate-200 bg-slate-950 p-5 text-white">
-          <h3 className="text-base font-bold">สรุปจำนวนข้อมูล</h3>
+          <h3 className="text-base font-bold">สรุปข้อมูลจาก server</h3>
+          <p className="mt-1 text-xs text-slate-400">{readiness?.program?.program_code || 'CS2565'}</p>
           <div className="mt-4 grid gap-3">
-            {entityOrder.filter((key) => adminEntities[key]).map((key) => (
+            {Object.entries(readiness?.summary || {}).map(([key, value]) => (
               <div key={key} className="flex items-center justify-between border-b border-white/10 pb-2 text-sm">
-                <span className="text-slate-300">{entityLabels[key]}</span>
-                <span className="font-bold">{counts[key] || 0}</span>
+                <span className="text-slate-300">{readinessSummaryLabels[key] || key}</span>
+                <span className="font-bold">{value}</span>
               </div>
             ))}
           </div>

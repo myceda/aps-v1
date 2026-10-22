@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { allowedGrades } from '../../lib/student-transcript.js';
 
 const statusText = {
   normal: 'สถานะปกติ',
@@ -19,7 +20,7 @@ const simulationActions = [
   { value: 'fail', label: 'Fail', helper: 'จำลองว่าวิชานี้ได้ F' },
 ];
 
-const gradeOptions = ['A', 'B+', 'B', 'C+', 'C', 'D+', 'D'];
+const gradeOptions = allowedGrades;
 
 function numberText(value) {
   return Number.isFinite(Number(value)) ? Number(value).toLocaleString('th-TH') : '-';

@@ -80,6 +80,7 @@ export function validateTranscriptRows(rows, courseCatalog = []) {
     const issues = [];
     const course = courseMap.get(courseCode);
     const duplicateKey = `${courseCode}:${academicYear}:${semester}`;
+    const isPendingGradeBlank = !grade;
     const isZeroCreditAllowed = ['W', 'IP'].includes(grade) && credits === 0;
     const isTransferRow = semester === 'transfer' && academicYear === 0;
 
@@ -103,7 +104,7 @@ export function validateTranscriptRows(rows, courseCatalog = []) {
       issues.push(`หน่วยกิตไม่ตรงกับคลังรายวิชา (${course.credits})`);
     }
 
-    if (!allowedGrades.includes(grade)) {
+    if (!isPendingGradeBlank && !allowedGrades.includes(grade)) {
       issues.push('เกรดไม่อยู่ในรูปแบบที่รองรับ');
     }
 
@@ -127,7 +128,7 @@ export function validateTranscriptRows(rows, courseCatalog = []) {
       course,
       issues,
       validation_status: issues.length === 0 ? 'valid' : 'invalid',
-      status: issues.length === 0 ? (row.status || 'confirmed') : 'needs_review',
+      status: issues.length === 0 ? (isPendingGradeBlank ? 'pending_grade' : (row.status || 'confirmed')) : 'needs_review',
       confidence: Number(row.confidence || 0),
     };
   });

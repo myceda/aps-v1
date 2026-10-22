@@ -1,55 +1,45 @@
-import { NextResponse } from 'next/server';
 import { analyzeStudentProgress } from '../../../../lib/analysis/index.js';
-import { requireStudent } from '../../../../lib/auth/index.js';
+import { requireCs2565StudentContext } from '../../../../lib/auth/student-context.js';
 import { prisma } from '../../../../lib/prisma.js';
 
-function jsonResponse(payload, status = 200) {
-  return NextResponse.json(payload, { status });
-}
-
-async function getCurrentStudentProgram(student) {
-  if (!student?.student_id) return null;
-
-  return prisma.studentProgram.findFirst({
-    where: { student_id: student.student_id },
-    orderBy: { enrolled_at: 'desc' },
+const DEMO_CURRENT_TERM = { academicYear: 2569, semester: '1' };
+const DEMO_CREDIT_LIMITS = { 1: 22, 2: 22, summer: 9 };
+const PROGRAM_INCLUDE = {
+  structures: { orderBy: [{ category_type: 'asc' }, { category_name: 'asc' }] },
+  programCourses: {
+    include: { course: true, structure: true },
+    orderBy: { created_at: 'asc' },
+  },
+  studyPlans: {
     include: {
-      program: {
-        include: {
-          structures: { orderBy: [{ category_type: 'asc' }, { category_name: 'asc' }] },
-          programCourses: {
-            include: { course: true, structure: true },
-            orderBy: { created_at: 'asc' },
-          },
-          studyPlans: {
-            include: {
-              studyPlanCourses: {
-                include: { course: true },
-                orderBy: { recommended_order: 'asc' },
-              },
-            },
-            orderBy: [{ year_level: 'asc' }, { semester: 'asc' }],
-          },
-        },
+      studyPlanCourses: {
+        include: { course: true },
+        orderBy: { recommended_order: 'asc' },
       },
     },
-  });
+    orderBy: [{ year_level: 'asc' }, { semester: 'asc' }],
+  },
+  courseOfferings: {
+    where: { status: { in: ['confirmed', 'planned'] } },
+    include: { course: true },
+    orderBy: [{ academic_year: 'asc' }, { semester: 'asc' }],
+  },
+  rules: {
+    where: { is_active: true },
+    orderBy: [{ rule_type: 'asc' }, { rule_name: 'asc' }],
+  },
+};
+
+function jsonResponse(payload, status = 200) {
+  return Response.json(payload, { status });
 }
 
 export async function GET(request) {
-  const auth = await requireStudent(request);
-  if (auth.error) return auth.error;
-
   try {
-    const student = auth.student;
-    const studentProgram = await getCurrentStudentProgram(student);
-    const program = studentProgram?.program;
-    if (!program) {
-      return jsonResponse({
-        success: false,
-        error: 'ยังไม่พบหลักสูตรสำหรับวิเคราะห์',
-      }, 404);
-    }
+    const context = await requireCs2565StudentContext(request, { programInclude: PROGRAM_INCLUDE });
+    if (context.error) return context.error;
+
+    const { student, studentProgram, program } = context;
 
     const [grades, prerequisites, latestTranscript] = await Promise.all([
       prisma.studentGrade.findMany({
@@ -84,6 +74,10 @@ export async function GET(request) {
       program,
       grades,
       prerequisites,
+      offerings: program.courseOfferings,
+      rules: program.rules,
+      currentTerm: DEMO_CURRENT_TERM,
+      creditLimits: DEMO_CREDIT_LIMITS,
       studyTrack: studentProgram.study_track,
       latestTranscript,
     });

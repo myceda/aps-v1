@@ -1,31 +1,14 @@
 import { analyzeStudentProgress } from './index.js';
-import { isPassedGrade } from './gpax-calculator.js';
+import { isGpaxCountedGrade, isPassedGrade } from './gpax-calculator.js';
 
 const VALID_ACTIONS = new Set(['add', 'drop', 'fail']);
-const SEMESTER_ORDER = { 1: 1, 2: 2, summer: 3 };
 
 function getCourseId(row) {
   return row.course_id || row.course?.course_id;
 }
 
-function getTermOrder(term) {
-  return Number(term.yearLevel || 0) * 10 + (SEMESTER_ORDER[term.semester] || 0);
-}
-
 function getExpectedGraduationTerm(roadmap) {
-  const terms = roadmap?.terms || [];
-  const termsWithRemainingCourses = terms.filter((term) => (
-    (term.courses || []).some((course) => course.status !== 'passed')
-  ));
-  const finalTerm = [...(termsWithRemainingCourses.length > 0 ? termsWithRemainingCourses : terms)]
-    .filter((term) => (term.courses || []).length > 0)
-    .sort((a, b) => getTermOrder(b) - getTermOrder(a))[0];
-
-  return finalTerm ? {
-    key: finalTerm.key,
-    label: finalTerm.label,
-    totalCredits: finalTerm.totalCredits,
-  } : null;
+  return roadmap?.expectedGraduationTerm || null;
 }
 
 function buildCourseLookup(program) {
@@ -40,26 +23,28 @@ function buildCourseLookup(program) {
   return courses;
 }
 
-function makeSimulatedGrade({ course, student, latestTranscript, action, simulatedGrade }) {
+function makeSimulatedGrade({ course, student, latestTranscript, action, simulatedGrade, currentTerm }) {
   const grade = action === 'fail' ? 'F' : simulatedGrade || 'A';
   const passed = isPassedGrade(grade);
+  const credits = Number(course.credits || 0);
+  const gpaxCounted = isGpaxCountedGrade(grade);
 
   return {
     grade_id: `simulation-${action}-${course.course_id}`,
     transcript_id: latestTranscript?.transcript_id || 'simulation-transcript',
     student_id: student?.student_id || 'simulation-student',
     course_id: course.course_id,
-    academic_year: Number(new Date().getFullYear()) + 543,
-    semester: '1',
+    academic_year: Number(currentTerm?.academicYear ?? currentTerm?.academic_year ?? 2569),
+    semester: String(currentTerm?.semester || '1'),
     grade,
-    credits_attempted: Number(course.credits || 0),
-    credits_earned: passed ? Number(course.credits || 0) : 0,
+    credits_attempted: gpaxCounted ? credits : 0,
+    credits_earned: passed ? credits : 0,
     is_confirmed: false,
     course,
   };
 }
 
-function applySimulationActions({ grades, actions, courses, student, latestTranscript }) {
+function applySimulationActions({ grades, actions, courses, student, latestTranscript, currentTerm }) {
   let simulatedGrades = grades.map((grade) => ({ ...grade }));
   const appliedActions = [];
 
@@ -82,7 +67,13 @@ function applySimulationActions({ grades, actions, courses, student, latestTrans
       ));
 
       if (!hasExistingGrade) {
-        simulatedGrades.push(makeSimulatedGrade({ course, student, latestTranscript, action: actionType }));
+        simulatedGrades.push(makeSimulatedGrade({
+          course,
+          student,
+          latestTranscript,
+          action: actionType,
+          currentTerm,
+        }));
       }
     }
 
@@ -96,6 +87,7 @@ function applySimulationActions({ grades, actions, courses, student, latestTrans
           latestTranscript,
           action: actionType,
           simulatedGrade: action.simulated_grade,
+          currentTerm,
         }),
       ];
     }
@@ -105,7 +97,11 @@ function applySimulationActions({ grades, actions, courses, student, latestTrans
       course_id: course.course_id,
       course_code: course.course_code,
       course_name_th: course.course_name_th,
-      simulated_grade: actionType === 'fail' ? 'F' : action.simulated_grade || (actionType === 'add' ? 'A' : ''),
+      simulated_grade: actionType === 'fail'
+        ? 'F'
+        : actionType === 'drop'
+          ? 'W'
+          : action.simulated_grade || 'A',
     });
   }
 
@@ -139,6 +135,11 @@ function buildComparison(beforeAnalysis, afterAnalysis) {
       before: beforeGraduationTerm,
       after: afterGraduationTerm,
       changed: beforeGraduationTerm?.key !== afterGraduationTerm?.key,
+    },
+    offeringConfidence: {
+      before: beforeAnalysis.roadmap?.confidence || 'unavailable',
+      after: afterAnalysis.roadmap?.confidence || 'unavailable',
+      changed: beforeAnalysis.roadmap?.confidence !== afterAnalysis.roadmap?.confidence,
     },
   };
 }
@@ -183,6 +184,9 @@ export function simulateWhatIf({
   grades = [],
   prerequisites = [],
   offerings = [],
+  rules = [],
+  currentTerm,
+  creditLimits,
   studyTrack,
   latestTranscript,
   actions = [],
@@ -193,6 +197,10 @@ export function simulateWhatIf({
     program,
     grades,
     prerequisites,
+    offerings,
+    rules,
+    currentTerm,
+    creditLimits,
     studyTrack,
     latestTranscript,
   });
@@ -202,12 +210,17 @@ export function simulateWhatIf({
     courses,
     student,
     latestTranscript,
+    currentTerm,
   });
   const after = analyzeStudentProgress({
     student,
     program,
     grades: simulatedGrades,
     prerequisites,
+    offerings,
+    rules,
+    currentTerm,
+    creditLimits,
     studyTrack,
     latestTranscript,
   });

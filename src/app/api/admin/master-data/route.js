@@ -50,7 +50,20 @@ function createPrismaErrorMessage(error) {
   if (error?.code === 'P2002') return 'ข้อมูลซ้ำกับรายการที่มีอยู่แล้ว กรุณาตรวจรหัสหรือความสัมพันธ์ที่กำหนด';
   if (error?.code === 'P2003') return 'ข้อมูลอ้างอิงไม่ถูกต้อง กรุณาเลือกหลักสูตรหรือรายวิชาที่มีอยู่จริง';
   if (error?.code === 'P2025') return 'ไม่พบรายการที่ต้องการแก้ไขหรือลบ';
-  return error?.message || 'เกิดข้อผิดพลาดในการบันทึกข้อมูล';
+  return 'เกิดข้อผิดพลาดในการบันทึกข้อมูล';
+}
+
+async function validateEntityData(config, data) {
+  if (config.model !== 'rule') return [];
+
+  const program = await prisma.program.findUnique({
+    where: { program_id: data.program_id },
+    select: { program_code: true },
+  });
+
+  if (!program) return ['ไม่พบหลักสูตรที่เลือก'];
+  if (program.program_code !== 'CS2565') return ['Demo รอบนี้อนุญาตให้จัดการ Rule ของ CS2565 เท่านั้น'];
+  return [];
 }
 
 function createLookupSelect(config) {
@@ -107,6 +120,9 @@ export async function POST(request) {
   if (errors.length > 0) return jsonResponse({ success: false, errors }, 422);
 
   try {
+    const entityErrors = await validateEntityData(config, data);
+    if (entityErrors.length > 0) return jsonResponse({ success: false, errors: entityErrors }, 422);
+
     const record = await prisma[config.model].create({ data });
     return jsonResponse({ success: true, data: serializeRecord(record) }, 201);
   } catch (caughtError) {
@@ -129,6 +145,9 @@ export async function PUT(request) {
   if (errors.length > 0) return jsonResponse({ success: false, errors }, 422);
 
   try {
+    const entityErrors = await validateEntityData(config, data);
+    if (entityErrors.length > 0) return jsonResponse({ success: false, errors: entityErrors }, 422);
+
     const record = await prisma[config.model].update({
       where: buildWhere(config, id),
       data,
